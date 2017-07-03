@@ -23,7 +23,7 @@ def get_version():
 # when they are imported.
 
 from .lebleu import LeBLEU
-from .lebleu import modifiedLeBLEU
+from .lebleu import ModifiedLeBLEU
 
 # Convenience functions
 
