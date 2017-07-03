@@ -1,6 +1,7 @@
 from __future__ import division, unicode_literals
 
 import collections
+from nltk.corpus import wordnet as wn
 import Levenshtein
 import logging
 import numpy as np
@@ -10,13 +11,13 @@ _logger = logging.getLogger(__name__)
 
 def make_acceptor(n, limit):
     acc_ratio = limit / n
-    #print('acc_ratio {}'.format(acc_ratio))
+    # print('acc_ratio {}'.format(acc_ratio))
     if acc_ratio < 0.5:
         m = n // limit
         return lambda i: i % m == 0
     else:
         m = n // (n - limit)
-        return lambda i: i % m < (m-1)
+        return lambda i: i % m < (m - 1)
 
 
 def ngrams(seq, max_n, min_n=1, limit=None):
@@ -42,7 +43,7 @@ def best_scores(scores,
                 ref_strs):
     """sum together the best scores, taking reference counts into account"""
     out = 0.0
-    cursor = -1     # best scores at end of sorted matrix
+    cursor = -1  # best scores at end of sorted matrix
     while count > 0:
         score = scores[sortidx[cursor]]
         if score == 0:
@@ -51,7 +52,7 @@ def best_scores(scores,
         refc = ref_counts[sortidx[cursor]]
         refc = min(refc, count)
         out += refc * score
-        #print('"{}" <-> "{}": {} * {} = {}'.format(
+        # print('"{}" <-> "{}": {} * {} = {}'.format(
         #    hyp_str, ref_strs[sortidx[cursor]],
         #    refc, score, refc * score))
         count -= refc
@@ -88,7 +89,7 @@ class BLEU(object):
         ngramcounts = collections.Counter()
         if self.ngram_limit is not None:
             limit = self.ngram_limit // max_n
-            #print('limit {}'.format(limit))
+            # print('limit {}'.format(limit))
         else:
             limit = None
         for ngram in ngrams(tokens, max_n, min_n=1, limit=limit):
@@ -125,11 +126,13 @@ class BLEU(object):
             if h == 0:
                 if last is None:
                     last = i - 1
-                hits[i] = 1. / 2**(i - last)
+                hits[i] = 1. / 2 ** (i - last)
         return hits
+
 
 class LeBLEU(BLEU):
     """LeBLEU: Soft BLEU score based on letter edits / Levenshtein distance"""
+
     def __init__(self,
                  max_n=4,
                  threshold=0.4,
@@ -141,7 +144,7 @@ class LeBLEU(BLEU):
                                      average,
                                      smooth)
         self.threshold = threshold
-        #_logger.info('LeBLEU: max_n={}, threshold={}, ngram_limit={}, '
+        # _logger.info('LeBLEU: max_n={}, threshold={}, ngram_limit={}, '
         #             'average={}, smooth={}'.format(
         #                max_n, threshold, ngram_limit, average, smooth))
 
@@ -155,17 +158,16 @@ class LeBLEU(BLEU):
     def _eval_helper(self, hypothesis, reference):
         hyp_words = hypothesis.split()
         ref_words = reference.split()
-
         hyp_ngrams = self.count_ngrams(hyp_words).items()
         ref_ngrams = self.count_ngrams(ref_words,
                                        max_n=(2 * self.max_n)
-                                      ).items()
+                                       ).items()
         # separate n-grams for which 1-best is enough
         hyp_ngrams_single = [(h, c) for (h, c) in hyp_ngrams if c == 1]
-        hyp_ngrams_multi  = [(h, c) for (h, c) in hyp_ngrams if c > 1]
+        hyp_ngrams_multi = [(h, c) for (h, c) in hyp_ngrams if c > 1]
         hyp_strs_single = [' '.join(h) for (h, c) in hyp_ngrams_single]
-        hyp_strs_multi  = [' '.join(h) for (h, c) in hyp_ngrams_multi]
-        
+        hyp_strs_multi = [' '.join(h) for (h, c) in hyp_ngrams_multi]
+
         ref_strs = [' '.join(r) for (r, _) in ref_ngrams]
 
         hyp_ngrams = hyp_ngrams_single + hyp_ngrams_multi
@@ -184,9 +186,9 @@ class LeBLEU(BLEU):
         else:
             scores = scores_single
 
-        #print(scores)
+        # print(scores)
         scores = self._score(scores, hyp_strs, ref_strs)
-        #print(scores)
+        # print(scores)
 
         sortidx = scores.argsort()
         ref_counts = [count for (_, count) in ref_ngrams]
@@ -204,7 +206,7 @@ class LeBLEU(BLEU):
                                            hyp_strs[i],
                                            ref_strs)
             tot[order - 1] += count
-            #print(i, hits, tot, hyp)
+            # print(i, hits, tot, hyp)
         return (hits, tot)
 
     def eval_single(self, hypothesis, reference):
@@ -230,13 +232,13 @@ class LeBLEU(BLEU):
                 (h, t) = (0, 0)
             else:
                 (h, t) = self._eval_helper(hyp, ref)
-            #print('h {} t {}'.format(h, t))
+            # print('h {} t {}'.format(h, t))
             hits += h
             tot += t
         if hyplen == 0:
             _logger.warn('system hypothesis is empty (unlikely)')
             return 0
-            
+
         score = self.combine_scores(hits,
                                     tot,
                                     hyplen,
@@ -266,9 +268,105 @@ class LeBLEU(BLEU):
         # set lower-bound pruned comparisons to zero score
         score[np.isnan(score)] = 0
         # debug: print near threshold matches
-        #nearmatch = np.abs(score - self.threshold) < 0.01
-        #for (i, j) in zip(*np.where(nearmatch)):
+        # nearmatch = np.abs(score - self.threshold) < 0.01
+        # for (i, j) in zip(*np.where(nearmatch)):
         #    print('near {}: "{}" <-> "{}"'.format(score[i, j], hyp[i], ref[j]))
         # if the normalized distance is too far, no score is awarded
         score[score < self.threshold] = 0
         return score
+
+
+class ModifiedLeBLEU(LeBLEU):
+    """ModifiedLeBLEU: LeBLEU score combined with wordnet similarity of two n-grams"""
+
+    def distances(self, hyp, ref, bestonly):
+        # print(hyp)
+        # print(ref)
+        bo = 1 if bestonly else 0
+        dist = Levenshtein.compare_lists(hyp, ref, self.threshold, bo)
+        # replace special value -1 meaning "above threshold"0
+        # print(dist)
+        # print(dist==-1)
+        dist[dist == -1] = np.NaN
+        for i, hyp_ngram in enumerate(hyp):
+            for j, ref_ngram in enumerate(ref):
+                if dist[i][j] != 0:
+                    ref_ngram_split = ref_ngram.split(' ')
+                    all_matched = True
+                    hyp_ngram_split = hyp_ngram.split(' ')
+                    if len(ref_ngram_split) == len(hyp_ngram_split):
+                        for k, hyp_w in enumerate(hyp_ngram_split):
+                            ref_w = ref_ngram_split[k]
+                            if self.wordnet_similarity_distance(hyp_word=hyp_w, ref_word=ref_w) > 0.5:
+                                all_matched = False
+                                break
+                        if all_matched:
+                            dist[i][j] = 0
+        print(dist)
+        return dist
+
+    @staticmethod
+    def wordnet_similarity_distance(hyp_word, ref_word):
+        hyp_words_synsets = wn.synsets(hyp_word)
+        ref_word_synsets = wn.synsets(ref_word)
+        max_similarity = 0
+        for hyp_synset in hyp_words_synsets:
+            for ref_synset in ref_word_synsets:
+                if hyp_synset.pos() == ref_synset.pos():
+                    similarity = hyp_synset.wup_similarity(ref_synset)
+                    if similarity is not None and similarity > max_similarity:
+                        max_similarity = similarity
+        return max_similarity
+
+    def _eval_helper(self, hypothesis, reference):
+        hyp_words = hypothesis.split()
+        ref_words = reference.split()
+        hyp_ngrams = self.count_ngrams(hyp_words).items()
+        ref_ngrams = self.count_ngrams(ref_words,
+                                       max_n=(2 * self.max_n)
+                                       ).items()
+        # separate n-grams for which 1-best is enough
+        hyp_ngrams_single = [(h, c) for (h, c) in hyp_ngrams if c == 1]
+        hyp_ngrams_multi = [(h, c) for (h, c) in hyp_ngrams if c > 1]
+        hyp_strs_single = [' '.join(h) for (h, c) in hyp_ngrams_single]
+        hyp_strs_multi = [' '.join(h) for (h, c) in hyp_ngrams_multi]
+
+        ref_strs = [' '.join(r) for (r, _) in ref_ngrams]
+
+        hyp_ngrams = hyp_ngrams_single + hyp_ngrams_multi
+        hyp_strs = hyp_strs_single + hyp_strs_multi
+
+        if len(hyp_strs_single) > 0:
+            scores_single = self.distances(hyp_strs_single, ref_strs, True)
+        else:
+            scores_single = None
+        if len(hyp_strs_multi) > 0:
+            scores_multi = self.distances(hyp_strs_multi, ref_strs, False)
+            if scores_single is None:
+                scores = scores_multi
+            else:
+                scores = np.concatenate((scores_single, scores_multi))
+        else:
+            scores = scores_single
+
+        # print(scores)
+        scores = self._score(scores, hyp_strs, ref_strs)
+        # print(scores)
+
+        sortidx = scores.argsort()
+        ref_counts = [count for (_, count) in ref_ngrams]
+        hits = np.zeros(self.max_n)
+        tot = np.zeros(self.max_n)
+        for (i, item) in enumerate(hyp_ngrams):
+            hyp, count = item
+            order = len(hyp)
+            # sum together the count best scores
+            hits[order - 1] += best_scores(scores[i],
+                                           sortidx[i],
+                                           ref_counts,
+                                           count,
+                                           hyp_strs[i],
+                                           ref_strs)
+            tot[order - 1] += count
+            # print(i, hits, tot, hyp)
+        return (hits, tot)
